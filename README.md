@@ -1,32 +1,71 @@
 # Snyk Application Compliance Reporter
 
-This tool identifies "Ghost Repositories" and stale scans across your Snyk Organization by cross-referencing the **REST API** (Inventory) with the **Export API** (Issue Data).
+A specialized auditing tool designed to report on the **Last Scanned Date** of applications within Snyk.
 
-## How it works
-Snyk's Export API only returns data for projects with active vulnerabilities. This script fills the "Zero-Vuln Gap" by:
-1. Fetching every Target registered in Snyk.
-2. Fetching the latest scan dates for all Issues.
-3. Flagging apps that haven't been scanned within your defined window (default: 30 days).
+## Why this tool?
 
-## Setup
-1. Clone the repo: `git clone <your-url>` 
-2. Install dependencies: `pip install -r requirements.txt` 
-3. Copy `.env.example` to `.env` and add your `SNYK_TOKEN` and `SNYK_ORG_ID`.
-4. Run: `python main.py` 
+In Snyk, an "Application" typically corresponds to a **Target** (e.g., a GitHub Repo or Container Image), which is composed of multiple **Projects** (e.g., package.json, Dockerfile).
 
-## Compliance Statuses
-- **COMPLIANT**: Scanned within the threshold.
-- **NON-COMPLIANT**: Scanned over 30 days ago.
-- **GHOST / ZERO-VULN**: Target exists in Snyk but has no issue data (indicates a perfectly clean repo or a failed initial scan).
+Standard Snyk reporting often hides "perfectly secure" apps because they have zero issues. This tool cross-references your absolute inventory with scan activity to ensure every application is accounted for, even those with zero vulnerabilities.
 
-## Troubleshooting Common Issues
+## Key Features
 
-- **401 Unauthorized**: Your API token is incorrect or has expired.
+- **Gap Analysis**: Identifies "Ghost Repos" (Targets that exist but haven't been scanned or have no issues).
+- **Smart Rollup**: Calculates the Application scan date based on the most recent scan of any nested project.
+- **Compliance Tagging**: Automatically flags applications that exceed your defined monthly scan threshold.
+- **Windsurf Ready**: Optimized for AI-assisted development and modular expansion.
 
-- **403 Forbidden**: You do not have "Group Admin" or "Org Admin" permissions. The Export API requires high-level permissions.
+## Getting Started
 
-- **429 Rate Limit Exceeded**: You are making too many requests. Wait a few minutes and try again.
+### Prerequisites
 
-- **Empty Results**: If the script returns an empty list, ensure that your Organization actually has Targets imported and that at least one scan has been completed.
+- Python 3.8+
+- Snyk API Token (Service Account recommended for CI/CD)
+- Snyk Organization ID
 
-- **Long Polling Times**: For Organizations with thousands of projects, the "Polling" phase may take several minutes. This is normal as Snyk is generating a large dataset on the backend.
+### Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/EmanAbelardF/snyk-compliance-reporter.git
+   cd snyk-compliance-reporter
+   ```
+
+2. Set up Virtual Environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. Configure Environment:
+   ```bash
+   cp .env.example .env
+   ```
+   Add your `SNYK_TOKEN` and `SNYK_ORG_ID` to the `.env` file.
+
+## Usage
+
+Run the main script to generate a CSV report:
+```bash
+python main.py
+```
+
+### Understanding the Report (`compliance_status` column)
+
+| Status | Description |
+|--------|-------------|
+| **COMPLIANT** | Scanned within the threshold (e.g., last 30 days). |
+| **NON-COMPLIANT** | Target exists, but the last scan is older than the threshold. |
+| **GHOST / ZERO-VULN** | **Critical Audit Note**: Target exists in inventory but has no vulnerability data. This repo is either 100% clean or hasn't been scanned since being imported. |
+
+## Project Structure
+
+- `main.py`: The execution entry point for Windsurf or CLI use.
+- `.env.example`: Template for environment variables.
+- `requirements.txt`: Python dependencies.
+
+## Security
+
+- **Tokens**: Never commit your `.env` file. It is included in `.gitignore` by default.
+- **Scopes**: The API Token used requires **Org Admin** or **Group Admin** permissions to access the Export API.
