@@ -12,11 +12,42 @@ SNYK_TOKEN = os.getenv('SNYK_TOKEN')
 ORG_ID = os.getenv('SNYK_ORG_ID')
 THRESHOLD = int(os.getenv('COMPLIANCE_THRESHOLD_DAYS', 30))
 
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
 HEADERS = {
     "Authorization": f"token {SNYK_TOKEN}",
     "Content-Type": "application/vnd.api+json",
     "Accept": "application/vnd.api+json"
 }
+
+
+def request_with_retry(method, url, **kwargs):
+    """Make HTTP request with retry logic for rate limiting (429) and transient errors."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.request(method, url, **kwargs)
+            
+            # Handle rate limiting
+            if response.status_code == 429:
+                retry_after = int(response.headers.get('Retry-After', RETRY_DELAY * (2 ** attempt)))
+                print(f"    [!] Rate limited. Retrying after {retry_after}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                time.sleep(retry_after)
+                continue
+            
+            response.raise_for_status()
+            return response
+            
+        except requests.exceptions.RequestException as e:
+            if attempt < MAX_RETRIES - 1:
+                wait_time = RETRY_DELAY * (2 ** attempt)
+                print(f"    [!] Request failed: {e}. Retrying in {wait_time}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
+            else:
+                raise
+    
+    raise Exception(f"Max retries ({MAX_RETRIES}) exceeded for {url}")
 
 def fetch_inventory():
     """Retrieves all Targets from the Snyk REST API (Inventory Source of Truth)"""
@@ -25,12 +56,16 @@ def fetch_inventory():
     url = f"https://api.snyk.io/rest/orgs/{ORG_ID}/targets?version=2024-10-15"
     
     while url:
-        response = requests.get(url, headers=HEADERS)
-        response.raise_for_status()
+        response = request_with_retry('GET', url, headers=HEADERS)
         data = response.json()
-        targets.extend([{"target_name": t['attributes']['display_name']} for t in data['data']])
-        url = data.get('links', {}).get('next')
+        targets.extend([{"target_name": t['attributes']['display_name']} for t in data.get('data', [])])
+        
+        # Safe pagination: check if 'next' exists and is not None/empty
+        links = data.get('links', {})
+        next_link = links.get('next') if links else None
+        url = next_link if next_link else None
     
+    print(f"    [+] Found {len(targets)} targets")
     return pd.DataFrame(targets)
 
 def fetch_scan_data():
@@ -47,20 +82,33 @@ def fetch_scan_data():
         }
     }
     
-    trigger_resp = requests.post(post_url, json=payload, headers=HEADERS)
-    trigger_resp.raise_for_status()
+    trigger_resp = request_with_retry('POST', post_url, json=payload, headers=HEADERS)
     export_id = trigger_resp.json()['data']['id']
 
-    # Polling Logic
+    # Polling Logic with failure detection
     status = "queued"
-    while status != "completed":
+    max_poll_attempts = 60  # Max 15 minutes of polling (60 * 15s)
+    poll_count = 0
+    
+    while status not in ("completed", "failed"):
         print(f"    - Current status: {status}. Waiting 15s...")
         time.sleep(15)
-        poll_resp = requests.get(f"{post_url}/{export_id}", headers=HEADERS).json()
+        poll_count += 1
+        
+        if poll_count >= max_poll_attempts:
+            raise Exception(f"Export polling timed out after {max_poll_attempts * 15 / 60} minutes")
+        
+        poll_resp = request_with_retry('GET', f"{post_url}/{export_id}", headers=HEADERS).json()
         status = poll_resp['data']['attributes']['status']
+    
+    # Check for export failure
+    if status == "failed":
+        error_msg = poll_resp['data']['attributes'].get('error', 'Unknown error')
+        raise Exception(f"Snyk Export API job failed: {error_msg}")
 
     print("[*] Download complete. Processing results...")
-    return pd.read_json(poll_resp['data']['attributes']['url'])
+    download_url = poll_resp['data']['attributes']['url']
+    return pd.read_json(download_url)
 
 def run_report():
     try:
